@@ -27,7 +27,12 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VIDEOS_DIR = os.path.join(BASE_DIR, os.getenv("VIDEOS_DIR", "videos"))
 DATA_DIR = os.path.join(BASE_DIR, os.getenv("DATA_DIR", "data"))
 
+# Check multiple possible locations for client_secret.json (Render support)
 CLIENT_SECRET_FILE = os.path.join(BASE_DIR, "client_secret.json")
+if not os.path.exists(CLIENT_SECRET_FILE):
+    # Render default secrets path
+    CLIENT_SECRET_FILE = "/etc/secrets/client_secret.json"
+
 TOKEN_FILE = os.path.join(DATA_DIR, "token.json")
 SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.csv")
 UPLOADED_FILE = os.path.join(DATA_DIR, "uploaded.txt")
@@ -182,33 +187,49 @@ def auth_start():
         redirect_uri=get_redirect_uri(),
     )
 
-    auth_url, _ = flow.authorization_url(
+    auth_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
         prompt="consent",
     )
+
+    # Save the code_verifier to a temp file so we can recover it in the callback
+    # This is needed because Render is stateless and the flow object is recreated
+    with open(os.path.join(DATA_DIR, "flow_state.json"), "w") as f:
+        json.dump({"code_verifier": flow.code_verifier}, f)
 
     return RedirectResponse(auth_url)
 
 
 @app.get("/auth/callback")
 def auth_callback(code: str):
-    flow = Flow.from_client_secrets_file(
-        CLIENT_SECRET_FILE,
-        scopes=SCOPES,
-        redirect_uri=get_redirect_uri(),
-    )
+    try:
+        flow = Flow.from_client_secrets_file(
+            CLIENT_SECRET_FILE,
+            scopes=SCOPES,
+            redirect_uri=get_redirect_uri(),
+        )
 
-    flow.fetch_token(code=code)
-    creds = flow.credentials
+        # Recover the code_verifier
+        state_path = os.path.join(DATA_DIR, "flow_state.json")
+        if os.path.exists(state_path):
+            with open(state_path, "r") as f:
+                state_data = json.load(f)
+                flow.code_verifier = state_data.get("code_verifier")
 
-    with open(TOKEN_FILE, "w", encoding="utf-8") as token:
-        token.write(creds.to_json())
+        flow.fetch_token(code=code)
+        creds = flow.credentials
 
-    return {
-        "status": "success",
-        "message": "YouTube account connected successfully. Now you can generate schedule and upload videos.",
-    }
+        with open(TOKEN_FILE, "w", encoding="utf-8") as token:
+            token.write(creds.to_json())
+
+        return {
+            "status": "success",
+            "message": "YouTube account connected successfully. Now you can generate schedule and upload videos.",
+        }
+    except Exception as e:
+        print(f"AUTH ERROR: {e}")
+        return JSONResponse(status_code=500, content={"status": "error", "message": str(e)})
 
 
 @app.post("/videos/upload")
