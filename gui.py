@@ -298,9 +298,18 @@ class YouTubeShortsGUI:
                     for i in self.queue_tree.get_children():
                         self.queue_tree.delete(i)
                     for item in items:
+                        # Pretty time formatting
+                        raw_time = item.get('publish_time', 'N/A')
+                        try:
+                            # Format: 2026-05-21T11:00:00+05:30 -> 21 May, 11:00 AM
+                            dt = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
+                            display_time = dt.strftime("%d %b, %I:%M %p")
+                        except:
+                            display_time = raw_time
+                            
                         status = item.get('status', 'pending')
                         display_status = f"✅ {status.upper()}" if status == "uploaded" else status.upper()
-                        self.queue_tree.insert("", tk.END, values=(item.get('filename'), item.get('publish_time'), display_status))
+                        self.queue_tree.insert("", tk.END, values=(item.get('filename'), display_time, display_status))
             except Exception as e:
                 print(f"Refresh error: {e}")
 
