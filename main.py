@@ -391,7 +391,24 @@ def get_schedule(profile: str = "default"):
         "uploaded_count": len(uploaded),
         "pending_count": len([r for r in rows if r.get("status") != "uploaded"]),
         "items": rows,
-    }
+@app.delete("/schedule")
+def clear_schedule(profile: str = "default"):
+    """Clears the entire schedule for a profile."""
+    write_schedule(profile, [])
+    return {"status": "success", "message": f"Schedule cleared for profile '{profile}'"}
+
+
+@app.delete("/schedule/{filename}")
+def delete_schedule_item(filename: str, profile: str = "default"):
+    """Removes a specific video from the schedule."""
+    rows = read_schedule(profile)
+    new_rows = [r for r in rows if r["filename"].strip() != filename.strip()]
+    
+    if len(new_rows) == len(rows):
+        raise HTTPException(status_code=404, detail="Video not found in schedule.")
+        
+    write_schedule(profile, new_rows)
+    return {"status": "success", "message": f"Removed {filename} from profile '{profile}'"}
 
 
 def upload_to_youtube(profile: str, row: dict):
