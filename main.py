@@ -43,12 +43,12 @@ DEFAULT_START_DATE = os.getenv("DEFAULT_START_DATE", "2026-05-21")
 
 DEFAULT_DESCRIPTION = os.getenv(
     "DEFAULT_DESCRIPTION",
-    "Quick and useful Adobe Premiere Pro editing tip. Subscribe for more daily Shorts. #shorts #youtubeshorts",
+    "Adobe Premiere Pro editing tips, effects, transitions, and video editing tricks in Shorts format.\nFollow for more editing tutorials.\n\n#premierepro #videoediting #editingtips #shorts #ytshorts #adobepremierepro #editingtutorial #viralshorts #ytshorts #youtubeshorts #viralshorts #trending #viralvideo #shortvideo #reels #explore #entertainment #creativevideo #newshorts #indianyoutuber #dailyshorts #subscribe",
 )
 
 DEFAULT_TAGS = os.getenv(
     "DEFAULT_TAGS",
-    "shorts,youtubeshorts,viral,trending",
+    "premierepro,videoediting,editingtips,shorts,ytshorts,adobepremierepro,editingtutorial,viralshorts,youtubeshorts,trending,viralvideo,shortvideo,reels,explore,entertainment,creativevideo,newshorts,indianyoutuber,dailyshorts,subscribe",
 )
 
 UPLOAD_TIMES = [

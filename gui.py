@@ -22,7 +22,7 @@ class YouTubeShortsGUI:
         self.root.geometry("900x700")
         self.root.configure(bg=BG_COLOR)
         
-        self.BASE_URL = "http://localhost:8000"
+        self.BASE_URL = "https://youtube-shorts-backend-q6wp.onrender.com"
         
         self.setup_styles()
         self.setup_ui()
@@ -197,6 +197,18 @@ class YouTubeShortsGUI:
         scb = ttk.Scrollbar(queue_inner, orient="vertical", command=self.queue_tree.yview)
         # Treeview doesn't support built-in scrollbar well with layouts but let's try
         self.queue_tree.configure(yscrollcommand=scb.set)
+        
+        # Management buttons
+        manage_frame = tk.Frame(queue_inner, bg=CARD_COLOR)
+        manage_frame.pack(fill="x", pady=15)
+        
+        btn_delete_sel = tk.Button(manage_frame, text="DELETE SELECTED", bg="#333333", fg="white", font=("Helvetica", 9, "bold"), 
+                                relief="flat", padx=15, pady=8, command=self.delete_selected_schedule, cursor="hand2")
+        btn_delete_sel.pack(side="left", padx=5)
+        
+        btn_clear_all = tk.Button(manage_frame, text="CLEAR ENTIRE SCHEDULE", bg="#333333", fg=YT_RED, font=("Helvetica", 9, "bold"), 
+                                relief="flat", padx=15, pady=8, command=self.clear_all_schedule, cursor="hand2", borderwidth=1, highlightbackground=YT_RED)
+        btn_clear_all.pack(side="left", padx=5)
 
     def refresh_data(self):
         def task():
@@ -327,6 +339,37 @@ class YouTubeShortsGUI:
                 self.btn_instant.config(state="normal", text="INSTANT PUBLISH")
                 
         threading.Thread(target=upload_task).start()
+
+    def delete_selected_schedule(self):
+        selected = self.queue_tree.selection()
+        if not selected:
+            messagebox.showwarning("Studio Warning", "Please select a video from the table first.")
+            return
+            
+        filename = self.queue_tree.item(selected[0])['values'][0]
+        if messagebox.askyesno("Studio Confirmation", f"Are you sure you want to remove '{filename}' from the schedule?"):
+            try:
+                res = requests.delete(f"{self.BASE_URL}/schedule/{filename}")
+                if res.status_code == 200:
+                    messagebox.showinfo("Studio Status", f"Removed {filename}")
+                    self.refresh_data()
+                else:
+                    messagebox.showerror("Studio Error", res.text)
+            except Exception as e:
+                messagebox.showerror("Studio Error", str(e))
+
+    def clear_all_schedule(self):
+        if messagebox.askyesno("Studio Confirmation", "Are you sure you want to CLEAR the ENTIRE schedule? This cannot be undone."):
+            try:
+                res = requests.delete(f"{self.BASE_URL}/schedule")
+                if res.status_code == 200:
+                    messagebox.showinfo("Studio Status", "Schedule cleared successfully!")
+                    self.refresh_data()
+                else:
+                    messagebox.showerror("Studio Error", res.text)
+            except Exception as e:
+                messagebox.showerror("Studio Error", str(e))
+
 
 if __name__ == "__main__":
     root = tk.Tk()
