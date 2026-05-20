@@ -391,6 +391,7 @@ def get_schedule(profile: str = "default"):
         "uploaded_count": len(uploaded),
         "pending_count": len([r for r in rows if r.get("status") != "uploaded"]),
         "items": rows,
+    }
 @app.delete("/schedule")
 def clear_schedule(profile: str = "default"):
     """Clears the entire schedule for a profile."""
