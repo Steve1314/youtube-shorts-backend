@@ -65,7 +65,7 @@ DEFAULT_TAGS = os.getenv(
 )
 
 UPLOAD_TIMES = [
-    t.strip() for t in os.getenv("UPLOAD_TIMES", "11:00,19:00").split(",") if t.strip()
+    t.strip() for t in os.getenv("UPLOAD_TIMES", "09:00,09:05,09:10").split(",") if t.strip()
 ]
 
 os.makedirs(VIDEOS_DIR, exist_ok=True)
