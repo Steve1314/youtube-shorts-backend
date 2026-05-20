@@ -27,15 +27,28 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VIDEOS_DIR = os.path.join(BASE_DIR, os.getenv("VIDEOS_DIR", "videos"))
 DATA_DIR = os.path.join(BASE_DIR, os.getenv("DATA_DIR", "data"))
 
-# Check multiple possible locations for client_secret.json (Render support)
+# Path Management
 CLIENT_SECRET_FILE = os.path.join(BASE_DIR, "client_secret.json")
 if not os.path.exists(CLIENT_SECRET_FILE):
-    # Render default secrets path
     CLIENT_SECRET_FILE = "/etc/secrets/client_secret.json"
 
-TOKEN_FILE = os.path.join(DATA_DIR, "token.json")
-SCHEDULE_FILE = os.path.join(DATA_DIR, "schedule.csv")
-UPLOADED_FILE = os.path.join(DATA_DIR, "uploaded.txt")
+PROFILES_DIR = os.path.join(DATA_DIR, "profiles")
+os.makedirs(PROFILES_DIR, exist_ok=True)
+
+def get_profile_dir(profile: str):
+    pdir = os.path.join(PROFILES_DIR, profile)
+    os.makedirs(pdir, exist_ok=True)
+    os.makedirs(os.path.join(pdir, "videos"), exist_ok=True)
+    return pdir
+
+def get_paths(profile: str):
+    pdir = get_profile_dir(profile)
+    return {
+        "token": os.path.join(pdir, "token.json"),
+        "schedule": os.path.join(pdir, "schedule.csv"),
+        "uploaded": os.path.join(pdir, "uploaded.txt"),
+        "videos": os.path.join(pdir, "videos")
+    }
 
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000").rstrip("/")
 TIMEZONE_OFFSET = os.getenv("TIMEZONE_OFFSET", "+05:30")
@@ -59,43 +72,45 @@ os.makedirs(VIDEOS_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
 
-def ensure_files():
-    if not os.path.exists(SCHEDULE_FILE):
-        with open(SCHEDULE_FILE, "w", newline="", encoding="utf-8-sig") as f:
+def ensure_files(profile: str):
+    paths = get_paths(profile)
+    if not os.path.exists(paths["schedule"]):
+        with open(paths["schedule"], "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(
                 f,
                 fieldnames=["filename", "title", "description", "tags", "publish_time", "status"],
             )
             writer.writeheader()
 
-    if not os.path.exists(UPLOADED_FILE):
-        open(UPLOADED_FILE, "w", encoding="utf-8").close()
+    if not os.path.exists(paths["uploaded"]):
+        open(paths["uploaded"], "w", encoding="utf-8").close()
 
 
-ensure_files()
-
-
-def get_uploaded_files():
-    if not os.path.exists(UPLOADED_FILE):
+def get_uploaded_files(profile: str):
+    paths = get_paths(profile)
+    if not os.path.exists(paths["uploaded"]):
         return set()
 
-    with open(UPLOADED_FILE, "r", encoding="utf-8") as f:
+    with open(paths["uploaded"], "r", encoding="utf-8") as f:
         return set(line.strip() for line in f if line.strip())
 
 
-def mark_uploaded(filename):
-    with open(UPLOADED_FILE, "a", encoding="utf-8") as f:
+def mark_uploaded(profile: str, filename: str):
+    paths = get_paths(profile)
+    with open(paths["uploaded"], "a", encoding="utf-8") as f:
         f.write(filename + "\n")
 
 
-def read_schedule():
-    ensure_files()
-    with open(SCHEDULE_FILE, "r", encoding="utf-8-sig") as f:
+def read_schedule(profile: str):
+    ensure_files(profile)
+    paths = get_paths(profile)
+    with open(paths["schedule"], "r", encoding="utf-8-sig") as f:
         return list(csv.DictReader(f))
 
 
-def write_schedule(rows):
-    with open(SCHEDULE_FILE, "w", newline="", encoding="utf-8-sig") as f:
+def write_schedule(profile: str, rows: List):
+    paths = get_paths(profile)
+    with open(paths["schedule"], "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(
             f,
             fieldnames=["filename", "title", "description", "tags", "publish_time", "status"],
@@ -156,17 +171,34 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/profiles")
+def list_profiles():
+    return {"profiles": os.listdir(PROFILES_DIR)}
+
+@app.post("/profiles")
+def create_profile(name: str):
+    get_profile_dir(name)
+    return {"status": "success", "message": f"Profile '{name}' created."}
+
+@app.delete("/profiles/{name}")
+def delete_profile(name: str):
+    pdir = os.path.join(PROFILES_DIR, name)
+    if os.path.exists(pdir):
+        shutil.rmtree(pdir)
+    return {"status": "success", "message": f"Profile '{name}' deleted."}
+
 @app.get("/auth/status")
-def auth_status():
-    if not os.path.exists(TOKEN_FILE):
+def auth_status(profile: str = "default"):
+    paths = get_paths(profile)
+    if not os.path.exists(paths["token"]):
         return {"authenticated": False, "message": "No token file found"}
     
     try:
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        creds = Credentials.from_authorized_user_file(paths["token"], SCOPES)
         if creds and creds.valid:
-            return {"authenticated": True, "message": "Authenticated"}
+            return {"authenticated": True, "profile": profile}
         elif creds and creds.refresh_token:
-            return {"authenticated": True, "message": "Token expired but refreshable"}
+            return {"authenticated": True, "profile": profile}
         else:
             return {"authenticated": False, "message": "Invalid token"}
     except Exception as e:
@@ -174,12 +206,9 @@ def auth_status():
 
 
 @app.get("/auth/start")
-def auth_start():
+def auth_start(profile: str = "default"):
     if not os.path.exists(CLIENT_SECRET_FILE):
-        raise HTTPException(
-            status_code=400,
-            detail="client_secret.json not found in backend root folder.",
-        )
+        raise HTTPException(status_code=400, detail="client_secret.json not found")
 
     flow = Flow.from_client_secrets_file(
         CLIENT_SECRET_FILE,
@@ -193,39 +222,51 @@ def auth_start():
         prompt="consent",
     )
 
-    # Save the code_verifier to a temp file so we can recover it in the callback
-    # This is needed because Render is stateless and the flow object is recreated
-    with open(os.path.join(DATA_DIR, "flow_state.json"), "w") as f:
-        json.dump({"code_verifier": flow.code_verifier}, f)
+    # Save state/verifier tied to profile
+    with open(os.path.join(get_profile_dir(profile), "flow_state.json"), "w") as f:
+        json.dump({"code_verifier": flow.code_verifier, "profile": profile}, f)
 
     return RedirectResponse(auth_url)
 
 
 @app.get("/auth/callback")
 def auth_callback(code: str):
+    # Find active flow_state
+    profile = "default"
+    code_verifier = None
+    
+    for p in os.listdir(PROFILES_DIR):
+        fpath = os.path.join(PROFILES_DIR, p, "flow_state.json")
+        if os.path.exists(fpath):
+            with open(fpath, "r") as f:
+                data = json.load(f)
+                profile = data.get("profile", "default")
+                code_verifier = data.get("code_verifier")
+                break
+
     try:
         flow = Flow.from_client_secrets_file(
             CLIENT_SECRET_FILE,
             scopes=SCOPES,
             redirect_uri=get_redirect_uri(),
         )
-
-        # Recover the code_verifier
-        state_path = os.path.join(DATA_DIR, "flow_state.json")
-        if os.path.exists(state_path):
-            with open(state_path, "r") as f:
-                state_data = json.load(f)
-                flow.code_verifier = state_data.get("code_verifier")
+        flow.code_verifier = code_verifier
 
         flow.fetch_token(code=code)
         creds = flow.credentials
 
-        with open(TOKEN_FILE, "w", encoding="utf-8") as token:
+        paths = get_paths(profile)
+        with open(paths["token"], "w", encoding="utf-8") as token:
             token.write(creds.to_json())
+
+        # Clean up
+        state_path = os.path.join(PROFILES_DIR, profile, "flow_state.json")
+        if os.path.exists(state_path):
+            os.remove(state_path)
 
         return {
             "status": "success",
-            "message": "YouTube account connected successfully. Now you can generate schedule and upload videos.",
+            "message": f"Channel connected for profile '{profile}'."
         }
     except Exception as e:
         print(f"AUTH ERROR: {e}")
@@ -233,14 +274,15 @@ def auth_callback(code: str):
 
 
 @app.post("/videos/upload")
-async def upload_video_file(file: UploadFile = File(...)):
+async def upload_video_file(file: UploadFile = File(...), profile: str = "default"):
     allowed = [".mp4", ".mov", ".mkv", ".webm"]
     ext = os.path.splitext(file.filename)[1].lower()
 
     if ext not in allowed:
         raise HTTPException(status_code=400, detail="Only video files are allowed.")
 
-    save_path = os.path.join(VIDEOS_DIR, file.filename)
+    paths = get_paths(profile)
+    save_path = os.path.join(paths["videos"], file.filename)
 
     with open(save_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
@@ -249,34 +291,41 @@ async def upload_video_file(file: UploadFile = File(...)):
         "status": "success",
         "filename": file.filename,
         "path": save_path,
+        "profile": profile
     }
 
 
 @app.get("/videos")
-def list_videos():
+def list_videos(profile: str = "default"):
+    paths = get_paths(profile)
+    vdir = paths["videos"]
     files = [
-        f for f in sorted(os.listdir(VIDEOS_DIR))
+        f for f in sorted(os.listdir(vdir))
         if f.lower().endswith((".mp4", ".mov", ".mkv", ".webm"))
     ]
 
     return {
         "total": len(files),
         "videos": files,
+        "profile": profile
     }
 
 
 @app.post("/schedule/generate")
 def generate_schedule(
+    profile: str = "default",
     start_date: Optional[str] = Query(None, example="2026-05-21"),
     daily_uploads: Optional[int] = Query(None, example=2),
 ):
+    paths = get_paths(profile)
+    vdir = paths["videos"]
     video_files = [
-        f for f in sorted(os.listdir(VIDEOS_DIR))
+        f for f in sorted(os.listdir(vdir))
         if f.lower().endswith((".mp4", ".mov", ".mkv", ".webm"))
     ]
 
     if not video_files:
-        raise HTTPException(status_code=400, detail="No videos found in videos folder.")
+        raise HTTPException(status_code=400, detail=f"No videos found for profile {profile}")
 
     final_start_date = start_date or DEFAULT_START_DATE
 
@@ -320,23 +369,24 @@ def generate_schedule(
 
         day_offset += 1
 
-    write_schedule(rows)
+    write_schedule(profile, rows)
 
     return {
         "status": "success",
         "total_scheduled": len(rows),
-        "start_date": final_start_date,
-        "upload_times": selected_times,
-        "schedule_file": SCHEDULE_FILE,
+        "profile": profile,
+        "start_date": final_start_date
     }
 
 
 @app.get("/schedule")
-def get_schedule():
-    rows = read_schedule()
-    uploaded = get_uploaded_files()
+def get_schedule(profile: str = "default"):
+    rows = read_schedule(profile)
+    uploaded = get_uploaded_files(profile)
 
     return {
+        "status": "success",
+        "profile": profile,
         "total": len(rows),
         "uploaded_count": len(uploaded),
         "pending_count": len([r for r in rows if r.get("status") != "uploaded"]),
@@ -344,11 +394,18 @@ def get_schedule():
     }
 
 
-def upload_to_youtube(row):
-    youtube = get_youtube_service()
+def upload_to_youtube(profile: str, row: dict):
+    paths = get_paths(profile)
+    token_path = paths["token"]
+    
+    if not os.path.exists(token_path):
+        raise Exception(f"No authentication found for profile '{profile}'")
+        
+    creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+    youtube = build("youtube", "v3", credentials=creds)
 
     filename = row["filename"].strip()
-    video_path = os.path.join(VIDEOS_DIR, filename)
+    video_path = os.path.join(paths["videos"], filename)
 
     if not os.path.exists(video_path):
         raise Exception(f"Video file not found: {filename}")
@@ -391,9 +448,9 @@ def upload_to_youtube(row):
 
 
 @app.post("/upload/next")
-def upload_next():
-    rows = read_schedule()
-    uploaded = get_uploaded_files()
+def upload_next(profile: str = "default"):
+    rows = read_schedule(profile)
+    uploaded = get_uploaded_files(profile)
 
     for row in rows:
         filename = row["filename"].strip()
@@ -402,16 +459,17 @@ def upload_next():
             continue
 
         try:
-            response = upload_to_youtube(row)
+            response = upload_to_youtube(profile, row)
 
             row["status"] = "uploaded"
-            write_schedule(rows)
-            mark_uploaded(filename)
+            write_schedule(profile, rows)
+            mark_uploaded(profile, filename)
 
             return {
                 "status": "success",
-                "message": "Next video uploaded and scheduled successfully.",
+                "message": "Next video uploaded successfully.",
                 "filename": filename,
+                "profile": profile,
                 "youtube_video_id": response.get("id"),
                 "publish_time": row["publish_time"],
             }
@@ -505,13 +563,10 @@ async def upload_instant(file: UploadFile = File(...)):
 
 
 @app.post("/upload/today")
-def upload_today():
-    """
-    Uploads all videos scheduled for today's date.
-    Best for daily backend cron.
-    """
-    rows = read_schedule()
-    uploaded = get_uploaded_files()
+def upload_today(profile: str = "default"):
+    """Uploads all videos scheduled for today for a specific profile."""
+    rows = read_schedule(profile)
+    uploaded = get_uploaded_files(profile)
     today = datetime.now().strftime("%Y-%m-%d")
 
     results = []
@@ -527,10 +582,10 @@ def upload_today():
             continue
 
         try:
-            response = upload_to_youtube(row)
+            response = upload_to_youtube(profile, row)
 
             row["status"] = "uploaded"
-            mark_uploaded(filename)
+            mark_uploaded(profile, filename)
 
             results.append({
                 "filename": filename,
@@ -547,10 +602,11 @@ def upload_today():
                 "error": str(e),
             })
 
-    write_schedule(rows)
+    write_schedule(profile, rows)
 
     return {
         "status": "success",
+        "profile": profile,
         "date": today,
         "uploaded_today": len([r for r in results if r["status"] == "uploaded"]),
         "results": results,
@@ -558,74 +614,71 @@ def upload_today():
 
 
 def scheduled_daily_upload():
-    """
-    Auto worker:
-    every day morning, upload today's scheduled videos to YouTube.
-    YouTube will publish them at publish_time.
-    """
+    """Auto worker: iterate all profiles and upload today's videos."""
     try:
-        print("Running daily auto upload...")
-        upload_today()
+        profiles = os.listdir(PROFILES_DIR)
+        for profile in profiles:
+            print(f"Running daily auto upload for profile: {profile}...")
+            upload_today(profile)
     except Exception as e:
         print(f"Daily upload error: {e}")
 
 
 def auto_generate_schedule():
-    """
-    Check if there are any new videos in the videos folder 
-    that are not in the schedule.csv, and auto-schedule them.
-    """
+    """Auto-schedule new videos for ALL profiles."""
     try:
-        print("Checking for new videos to auto-schedule...")
-        video_files = [
-            f for f in sorted(os.listdir(VIDEOS_DIR))
-            if f.lower().endswith((".mp4", ".mov", ".mkv", ".webm"))
-        ]
-        
-        current_schedule = read_schedule()
-        scheduled_filenames = set(r["filename"] for r in current_schedule)
-        
-        new_videos = [f for f in video_files if f not in scheduled_filenames]
-        
-        if not new_videos:
-            return
-
-        # Determine the next available start date
-        if current_schedule:
-            last_publish = current_schedule[-1]["publish_time"]
-            last_date_str = last_publish.split("T")[0]
-            start_date = datetime.strptime(last_date_str, "%Y-%m-%d") + timedelta(days=1)
-        else:
-            start_date = datetime.now() + timedelta(days=1)
-
-        # Reuse generate_schedule logic but for internal use
-        daily_uploads = len(UPLOAD_TIMES)
-        rows = current_schedule
-        
-        video_index = 0
-        day_offset = 0
-        while video_index < len(new_videos):
-            for upload_time in UPLOAD_TIMES:
-                if video_index >= len(new_videos):
-                    break
-                
-                current_date = start_date + timedelta(days=day_offset)
-                publish_time = f"{current_date.strftime('%Y-%m-%d')}T{upload_time}:00{TIMEZONE_OFFSET}"
-                filename = new_videos[video_index]
-                
-                rows.append({
-                    "filename": filename,
-                    "title": clean_title(filename),
-                    "description": DEFAULT_DESCRIPTION,
-                    "tags": DEFAULT_TAGS,
-                    "publish_time": publish_time,
-                    "status": "pending",
-                })
-                video_index += 1
-            day_offset += 1
+        profiles = os.listdir(PROFILES_DIR)
+        for profile in profiles:
+            print(f"Checking for new videos to auto-schedule for: {profile}...")
+            paths = get_paths(profile)
+            vdir = paths["videos"]
             
-        write_schedule(rows)
-        print(f"Auto-scheduled {len(new_videos)} new videos.")
+            video_files = [
+                f for f in sorted(os.listdir(vdir))
+                if f.lower().endswith((".mp4", ".mov", ".mkv", ".webm"))
+            ]
+            
+            current_schedule = read_schedule(profile)
+            scheduled_filenames = set(r["filename"] for r in current_schedule)
+            
+            new_videos = [f for f in video_files if f not in scheduled_filenames]
+            
+            if not new_videos:
+                continue
+
+            # Next availability
+            if current_schedule:
+                last_publish = current_schedule[-1]["publish_time"]
+                last_date_str = last_publish.split("T")[0]
+                start_date = datetime.strptime(last_date_str, "%Y-%m-%d") + timedelta(days=1)
+            else:
+                start_date = datetime.now() + timedelta(days=1)
+
+            rows = current_schedule
+            video_index = 0
+            day_offset = 0
+            while video_index < len(new_videos):
+                for upload_time in UPLOAD_TIMES:
+                    if video_index >= len(new_videos):
+                        break
+                    
+                    current_date = start_date + timedelta(days=day_offset)
+                    publish_time = f"{current_date.strftime('%Y-%m-%d')}T{upload_time}:00{TIMEZONE_OFFSET}"
+                    filename = new_videos[video_index]
+                    
+                    rows.append({
+                        "filename": filename,
+                        "title": clean_title(filename),
+                        "description": DEFAULT_DESCRIPTION,
+                        "tags": DEFAULT_TAGS,
+                        "publish_time": publish_time,
+                        "status": "pending",
+                    })
+                    video_index += 1
+                day_offset += 1
+                
+            write_schedule(profile, rows)
+            print(f"Auto-scheduled {len(new_videos)} new videos for {profile}.")
     except Exception as e:
         print(f"Auto-schedule error: {e}")
 

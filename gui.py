@@ -23,9 +23,12 @@ class YouTubeShortsGUI:
         self.root.configure(bg=BG_COLOR)
         
         self.BASE_URL = "https://youtube-shorts-backend-q6wp.onrender.com"
+        self.current_profile = "default"
+        self.available_profiles = []
         
         self.setup_styles()
         self.setup_ui()
+        self.refresh_profiles()
         self.refresh_data()
 
     def setup_styles(self):
@@ -86,6 +89,15 @@ class YouTubeShortsGUI:
         
         ttk.Label(header_frame, text="YouTube", foreground=YT_RED, font=("Helvetica", 18, "bold")).pack(side="left")
         ttk.Label(header_frame, text=" Shorts Studio", font=("Helvetica", 18, "bold")).pack(side="left")
+        
+        # Profile Selector
+        self.profile_var = tk.StringVar(value="default")
+        self.profile_dropdown = ttk.Combobox(header_frame, textvariable=self.profile_var, state="readonly", width=15)
+        self.profile_dropdown.pack(side="right", padx=10)
+        self.profile_dropdown.bind("<<ComboboxSelected>>", self.on_profile_change)
+        
+        tk.Button(header_frame, text="+ ADD CHANNEL", bg=CARD_COLOR, fg=TEXT_COLOR, font=("Helvetica", 8, "bold"),
+                  relief="flat", padx=10, pady=5, command=self.add_profile, cursor="hand2").pack(side="right", padx=5)
         
         # Main Tabs
         self.notebook = ttk.Notebook(self.root)
@@ -210,8 +222,42 @@ class YouTubeShortsGUI:
                                 relief="flat", padx=15, pady=8, command=self.clear_all_schedule, cursor="hand2", borderwidth=1, highlightbackground=YT_RED)
         btn_clear_all.pack(side="left", padx=5)
 
+    def refresh_profiles(self):
+        def task():
+            try:
+                res = requests.get(f"{self.BASE_URL}/profiles")
+                if res.status_code == 200:
+                    self.available_profiles = res.json().get("profiles", [])
+                    self.profile_dropdown['values'] = self.available_profiles
+                    if self.current_profile not in self.available_profiles:
+                        if self.available_profiles:
+                            self.current_profile = self.available_profiles[0]
+                            self.profile_var.set(self.current_profile)
+            except Exception as e:
+                print(f"Profile refresh error: {e}")
+        threading.Thread(target=task).start()
+
+    def on_profile_change(self, event):
+        self.current_profile = self.profile_var.get()
+        self.refresh_data()
+
+    def add_profile(self):
+        from tkinter import simpledialog
+        name = simpledialog.askstring("New Channel", "Enter name for the new channel profile:")
+        if name:
+            try:
+                res = requests.post(f"{self.BASE_URL}/profiles", params={"name": name})
+                if res.status_code == 200:
+                    messagebox.showinfo("Success", f"Profile '{name}' created!")
+                    self.refresh_profiles()
+                else:
+                    messagebox.showerror("Error", res.text)
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
     def refresh_data(self):
         def task():
+            p = self.current_profile
             try:
                 # Backend status
                 res = requests.get(f"{self.BASE_URL}/health")
@@ -224,13 +270,13 @@ class YouTubeShortsGUI:
                 
             try:
                 # Auth status
-                res = requests.get(f"{self.BASE_URL}/auth/status")
+                res = requests.get(f"{self.BASE_URL}/auth/status", params={"profile": p})
                 if res.status_code == 200:
                     data = res.json()
                     if data.get("authenticated"):
-                        self.lbl_auth_status.config(text="YouTube Identity: Connected ✅", foreground=ACCENT_GREEN)
+                        self.lbl_auth_status.config(text=f"Channel [{p}]: Connected ✅", foreground=ACCENT_GREEN)
                     else:
-                        self.lbl_auth_status.config(text="YouTube Identity: Disconnected ❌", foreground=YT_RED)
+                        self.lbl_auth_status.config(text=f"Channel [{p}]: Disconnected ❌", foreground=YT_RED)
                 else:
                     self.lbl_auth_status.config(text="YouTube Identity: Status Error ❌", foreground=YT_RED)
             except:
@@ -238,7 +284,7 @@ class YouTubeShortsGUI:
                 
             try:
                 # Videos list
-                res = requests.get(f"{self.BASE_URL}/videos")
+                res = requests.get(f"{self.BASE_URL}/videos", params={"profile": p})
                 if res.status_code == 200:
                     videos = res.json().get("videos", [])
                     self.video_listbox.delete(0, tk.END)
@@ -246,7 +292,7 @@ class YouTubeShortsGUI:
                         self.video_listbox.insert(tk.END, f"  🎥  {v}")
                 
                 # Schedule list
-                res = requests.get(f"{self.BASE_URL}/schedule")
+                res = requests.get(f"{self.BASE_URL}/schedule", params={"profile": p})
                 if res.status_code == 200:
                     items = res.json().get("items", [])
                     for i in self.queue_tree.get_children():
@@ -261,8 +307,8 @@ class YouTubeShortsGUI:
         threading.Thread(target=task).start()
 
     def open_auth(self):
-        webbrowser.open(f"{self.BASE_URL}/auth/start")
-        messagebox.showinfo("Studio Auth", "Redirecting to Google. Please finish authorization in your browser.")
+        webbrowser.open(f"{self.BASE_URL}/auth/start?profile={self.current_profile}")
+        messagebox.showinfo("Studio Auth", f"Redirecting to Google for profile '{self.current_profile}'. Please finish authorization in your browser.")
 
     def select_and_upload(self):
         file_paths = filedialog.askopenfilenames(filetypes=[("Video files", "*.mp4 *.mov *.mkv *.webm")])
@@ -275,9 +321,11 @@ class YouTubeShortsGUI:
                 for file_path in file_paths:
                     filename = os.path.basename(file_path)
                     with open(file_path, "rb") as f:
-                        res = requests.post(f"{self.BASE_URL}/videos/upload", files={"file": (filename, f)})
+                        res = requests.post(f"{self.BASE_URL}/videos/upload", 
+                                         files={"file": (filename, f)},
+                                         params={"profile": self.current_profile})
                 
-                messagebox.showinfo("Studio Status", f"Batch upload complete: {len(file_paths)} videos added.")
+                messagebox.showinfo("Studio Status", f"Batch upload complete: {len(file_paths)} videos added to '{self.current_profile}'.")
                 self.refresh_data()
             except Exception as e:
                 messagebox.showerror("Studio Error", str(e))
@@ -289,9 +337,12 @@ class YouTubeShortsGUI:
     def generate_schedule(self):
         start_date = self.ent_start_date.get()
         try:
-            res = requests.post(f"{self.BASE_URL}/schedule/generate", params={"start_date": start_date})
+            res = requests.post(f"{self.BASE_URL}/schedule/generate", params={
+                "start_date": start_date,
+                "profile": self.current_profile
+            })
             if res.status_code == 200:
-                messagebox.showinfo("Studio Status", "Auto-Schedule generated for your library!")
+                messagebox.showinfo("Studio Status", f"Auto-Schedule generated for channel '{self.current_profile}'!")
                 self.refresh_data()
             else:
                 messagebox.showerror("Studio Error", res.json().get("detail", res.text))
@@ -301,11 +352,11 @@ class YouTubeShortsGUI:
     def upload_next(self):
         def task():
             try:
-                res = requests.post(f"{self.BASE_URL}/upload/next")
+                res = requests.post(f"{self.BASE_URL}/upload/next", params={"profile": self.current_profile})
                 if res.status_code == 200:
                     data = res.json()
                     if data.get("status") == "success":
-                        messagebox.showinfo("Studio Status", f"Manually Published: {data.get('filename')}")
+                        messagebox.showinfo("Studio Status", f"Manually Published to '{self.current_profile}': {data.get('filename')}")
                     else:
                         messagebox.showinfo("Studio Info", data.get("message"))
                     self.refresh_data()
@@ -326,10 +377,12 @@ class YouTubeShortsGUI:
                 self.btn_instant.config(state="disabled", text="PUBLISHING...")
                 filename = os.path.basename(file_path)
                 with open(file_path, "rb") as f:
-                    res = requests.post(f"{self.BASE_URL}/upload/instant", files={"file": (filename, f)})
+                    res = requests.post(f"{self.BASE_URL}/upload/instant", 
+                                     files={"file": (filename, f)},
+                                     params={"profile": self.current_profile})
                 
                 if res.status_code == 200:
-                    messagebox.showinfo("Studio Status", "Success! Video is now LIVE on YouTube.")
+                    messagebox.showinfo("Studio Status", f"Success! Video is now LIVE on channel '{self.current_profile}'.")
                     self.refresh_data()
                 else:
                     messagebox.showerror("Studio Error", f"Instant publish failed: {res.text}")
@@ -347,11 +400,11 @@ class YouTubeShortsGUI:
             return
             
         filename = self.queue_tree.item(selected[0])['values'][0]
-        if messagebox.askyesno("Studio Confirmation", f"Are you sure you want to remove '{filename}' from the schedule?"):
+        if messagebox.askyesno("Studio Confirmation", f"Are you sure you want to remove '{filename}' from the schedule of profile '{self.current_profile}'?"):
             try:
-                res = requests.delete(f"{self.BASE_URL}/schedule/{filename}")
+                res = requests.delete(f"{self.BASE_URL}/schedule/{filename}", params={"profile": self.current_profile})
                 if res.status_code == 200:
-                    messagebox.showinfo("Studio Status", f"Removed {filename}")
+                    messagebox.showinfo("Studio Status", f"Removed {filename} from '{self.current_profile}'")
                     self.refresh_data()
                 else:
                     messagebox.showerror("Studio Error", res.text)
@@ -359,11 +412,11 @@ class YouTubeShortsGUI:
                 messagebox.showerror("Studio Error", str(e))
 
     def clear_all_schedule(self):
-        if messagebox.askyesno("Studio Confirmation", "Are you sure you want to CLEAR the ENTIRE schedule? This cannot be undone."):
+        if messagebox.askyesno("Studio Confirmation", f"Are you sure you want to CLEAR the ENTIRE schedule for '{self.current_profile}'? This cannot be undone."):
             try:
-                res = requests.delete(f"{self.BASE_URL}/schedule")
+                res = requests.delete(f"{self.BASE_URL}/schedule", params={"profile": self.current_profile})
                 if res.status_code == 200:
-                    messagebox.showinfo("Studio Status", "Schedule cleared successfully!")
+                    messagebox.showinfo("Studio Status", f"Schedule for '{self.current_profile}' cleared successfully!")
                     self.refresh_data()
                 else:
                     messagebox.showerror("Studio Error", res.text)
