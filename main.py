@@ -31,9 +31,11 @@ app = FastAPI(title="YouTube Shorts Auto Scheduler Backend")
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
-cloudinary.config(
-    cloudinary_url=os.getenv("CLOUDINARY_URL")
-)
+cloudinary_url = os.getenv("CLOUDINARY_URL")
+if cloudinary_url:
+    cloudinary.config(cloudinary_url=cloudinary_url)
+else:
+    print("WARNING: CLOUDINARY_URL not set. Videos will not be persistent.")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VIDEOS_DIR = os.path.join(BASE_DIR, os.getenv("VIDEOS_DIR", "videos"))
@@ -62,7 +64,9 @@ def get_paths(profile: str):
         "videos": os.path.join(pdir, "videos")
     }
 
-APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000").rstrip("/")
+# Use Render's external URL if available, fallback to localhost
+APP_BASE_URL = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("APP_BASE_URL", "http://localhost:8000")
+APP_BASE_URL = APP_BASE_URL.rstrip("/")
 TIMEZONE_OFFSET = os.getenv("TIMEZONE_OFFSET", "+05:30")
 DEFAULT_START_DATE = os.getenv("DEFAULT_START_DATE", "2026-05-21")
 
