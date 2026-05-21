@@ -402,6 +402,7 @@ def delete_schedule_item(filename: str, profile: str = "default"):
 
 def upload_to_youtube(profile: str, row: dict):
     youtube = get_youtube_service(profile)
+    paths = get_paths(profile)
 
     filename = row["filename"].strip()
     video_path = os.path.join(paths["videos"], filename)
@@ -516,7 +517,7 @@ async def upload_instant(file: UploadFile = File(...)):
         # but the current function supports 'private' + 'publishAt'.
         # For instant public, we just omit 'publishAt' and set privacy to 'public'.
         
-        youtube = get_youtube_service()
+        youtube = get_youtube_service("default")
         tags = [tag.strip() for tag in row["tags"].split(",") if tag.strip()]
 
         body = {
@@ -549,7 +550,7 @@ async def upload_instant(file: UploadFile = File(...)):
         while response is None:
             status, response = request.next_chunk()
 
-        mark_uploaded(file.filename)
+        mark_uploaded("default", file.filename)
         
         return {
             "status": "success",
@@ -615,7 +616,7 @@ def upload_today(profile: str = "default"):
 def scheduled_daily_upload():
     """Auto worker: iterate all profiles and upload today's videos."""
     try:
-        profiles = os.listdir(PROFILES_DIR)
+        profiles = db_get_profiles()
         for profile in profiles:
             print(f"Running daily auto upload for profile: {profile}...")
             upload_today(profile)
@@ -626,7 +627,7 @@ def scheduled_daily_upload():
 def auto_generate_schedule():
     """Auto-schedule new videos for ALL profiles."""
     try:
-        profiles = os.listdir(PROFILES_DIR)
+        profiles = db_get_profiles()
         for profile in profiles:
             print(f"Checking for new videos to auto-schedule for: {profile}...")
             paths = get_paths(profile)
