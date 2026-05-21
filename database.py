@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://vahlaydigital_db_user:GWOLQNfkkC6HZo15@cluster0.kaixweg.mongodb.net/?appName=Cluster0")
+MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://vahlaydigital_db_user:GWOLQNfkkC6HZo15@cluster0.kaixweg.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true")
 client = MongoClient(MONGO_URI)
 db = client["youtube_shorts_studio"]
 
