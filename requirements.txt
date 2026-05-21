@@ -9,3 +9,4 @@ apscheduler
 python-dotenv
 pymongo[srv]
 motor
+cloudinary

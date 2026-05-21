@@ -11,10 +11,12 @@ from dotenv import load_dotenv
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
+
+import cloudinary
+import cloudinary.uploader
+import requests
 
 from database import (
     db_get_profiles, db_add_profile, db_delete_profile,
@@ -27,11 +29,11 @@ load_dotenv()
 
 app = FastAPI(title="YouTube Shorts Auto Scheduler Backend")
 
-SCOPES = [
-    "https://www.googleapis.com/auth/youtube.upload",
-    "https://www.googleapis.com/auth/drive.file",
-    "https://www.googleapis.com/auth/drive.readonly"
-]
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+
+cloudinary.config(
+    cloudinary_url=os.getenv("CLOUDINARY_URL")
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VIDEOS_DIR = os.path.join(BASE_DIR, os.getenv("VIDEOS_DIR", "videos"))
@@ -123,80 +125,32 @@ def get_redirect_uri():
     return f"{APP_BASE_URL}/auth/callback"
 
 
-def get_google_service(profile: str, service_name: str, version: str):
-    token_json = db_get_token(profile)
-    if not token_json:
-        raise HTTPException(
-            status_code=401,
-            detail=f"Auth missing for profile '{profile}'. Open /auth/start first.",
-        )
-
-    creds = Credentials.from_authorized_user_info(json.loads(token_json), SCOPES)
-
-    if not creds or not creds.valid:
-        if creds and creds.refresh_token:
-            from google.auth.transport.requests import Request
-            creds.refresh(Request())
-            db_save_token(profile, creds.to_json())
-        else:
-            raise HTTPException(
-                status_code=401,
-                detail="Token expired. Open /auth/start again.",
-            )
-
-    return build(service_name, version, credentials=creds)
-
-def get_youtube_service(profile: str):
-    return get_google_service(profile, "youtube", "v3")
-
-def get_drive_service(profile: str):
-    return get_google_service(profile, "drive", "v3")
-
-def ensure_drive_folder(profile: str):
-    drive = get_drive_service(profile)
-    folder_name = f"YouTube Shorts Studio - {profile}"
-    
-    query = f"name = '{folder_name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-    results = drive.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
-    files = results.get('files', [])
-    
-    if not files:
-        file_metadata = {
-            'name': folder_name,
-            'mimeType': 'application/vnd.google-apps.folder'
-        }
-        folder = drive.files().create(body=file_metadata, fields='id').execute()
-        return folder.get('id')
-    return files[0].get('id')
-
-def upload_to_drive(profile: str, file_path: str):
+def upload_to_cloudinary(profile: str, file_path: str):
+    """Uploads video to Cloudinary for persistence."""
     try:
-        drive = get_drive_service(profile)
-        folder_id = ensure_drive_folder(profile)
-        filename = os.path.basename(file_path)
-
-        file_metadata = {
-            'name': filename,
-            'parents': [folder_id]
-        }
-        media = MediaFileUpload(file_path, mimetype='video/mp4', resumable=True)
-        file = drive.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        return file.get('id')
+        response = cloudinary.uploader.upload_large(
+            file_path,
+            resource_type="video",
+            folder=f"youtube_studio/{profile}",
+            public_id=os.path.basename(file_path)
+        )
+        return response.get("secure_url")
     except Exception as e:
-        print(f"Drive Upload Error: {e}")
+        print(f"Cloudinary Upload Error: {e}")
         return None
 
-def download_from_drive(profile: str, drive_id: str, dest_path: str):
+def download_from_cloudinary(url: str, dest_path: str):
+    """Downloads video from Cloudinary to local disk."""
     try:
-        drive = get_drive_service(profile)
-        request = drive.files().get_media(fileId=drive_id)
-        
+        r = requests.get(url, stream=True)
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        with open(dest_path, "wb") as f:
-            f.write(request.execute())
+        with open(dest_path, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=1024*1024):
+                if chunk:
+                    f.write(chunk)
         return True
     except Exception as e:
-        print(f"Drive Download Error: {e}")
+        print(f"Cloudinary Download Error: {e}")
         return False
 
 
@@ -332,13 +286,13 @@ async def upload_video_file(file: UploadFile = File(...), profile: str = "defaul
     with open(save_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    # Background upload to Drive
-    drive_id = upload_to_drive(profile, save_path)
+    # Upload to Cloudinary for persistence
+    cloudinary_url = upload_to_cloudinary(profile, save_path)
 
     return {
         "status": "success",
         "filename": file.filename,
-        "drive_id": drive_id,
+        "cloudinary_url": cloudinary_url,
         "profile": profile
     }
 
@@ -467,26 +421,14 @@ def upload_to_youtube(profile: str, row: dict):
     filename = row["filename"].strip()
     video_path = os.path.join(paths["videos"], filename)
 
-    # 1. Check if file exists locally, if not download from Drive
+    # 1. Check if file exists locally, if not download from Cloudinary
     if not os.path.exists(video_path):
-        # We need to find the drive_id. It should be in the row if we stored it.
-        # Otherwise, we can try to find it by name in Drive.
-        drive_id = row.get("drive_id")
-        if not drive_id:
-            # Fallback: Search by name in the profile folder
-            drive = get_drive_service(profile)
-            folder_id = ensure_drive_folder(profile)
-            query = f"name = '{filename}' and '{folder_id}' in parents and trashed = false"
-            res = drive.files().list(q=query, fields='files(id)').execute()
-            files = res.get('files', [])
-            if files:
-                drive_id = files[0]['id']
-        
-        if drive_id:
-            print(f"Downloading {filename} from Google Drive...")
-            download_from_drive(profile, drive_id, video_path)
+        cloudinary_url = row.get("cloudinary_url")
+        if cloudinary_url:
+            print(f"Downloading {filename} from Cloudinary...")
+            download_from_cloudinary(cloudinary_url, video_path)
         else:
-            raise Exception(f"Video file not found locally or on Drive: {filename}")
+            raise Exception(f"Video file not found locally or on Cloudinary: {filename}")
 
     tags = [tag.strip() for tag in row["tags"].split(",") if tag.strip()]
 
