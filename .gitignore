@@ -1,0 +1,12 @@
+# Sensitive files
+client_secret.json
+.env
+data/token.json
+
+# Large files
+videos/
+
+# Python leftovers
+__pycache__/
+*.pyc
+.venv/

@@ -16,6 +16,12 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
+from database import (
+    db_get_profiles, db_add_profile, db_delete_profile,
+    db_save_token, db_get_token, db_save_flow_state, db_get_flow_state,
+    db_save_schedule, db_get_schedule, db_mark_uploaded, db_get_uploaded_files
+)
+
 
 load_dotenv()
 
@@ -87,36 +93,19 @@ def ensure_files(profile: str):
 
 
 def get_uploaded_files(profile: str):
-    paths = get_paths(profile)
-    if not os.path.exists(paths["uploaded"]):
-        return set()
-
-    with open(paths["uploaded"], "r", encoding="utf-8") as f:
-        return set(line.strip() for line in f if line.strip())
+    return set(db_get_uploaded_files(profile))
 
 
 def mark_uploaded(profile: str, filename: str):
-    paths = get_paths(profile)
-    with open(paths["uploaded"], "a", encoding="utf-8") as f:
-        f.write(filename + "\n")
+    db_mark_uploaded(profile, filename)
 
 
 def read_schedule(profile: str):
-    ensure_files(profile)
-    paths = get_paths(profile)
-    with open(paths["schedule"], "r", encoding="utf-8-sig") as f:
-        return list(csv.DictReader(f))
+    return db_get_schedule(profile)
 
 
 def write_schedule(profile: str, rows: List):
-    paths = get_paths(profile)
-    with open(paths["schedule"], "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["filename", "title", "description", "tags", "publish_time", "status"],
-        )
-        writer.writeheader()
-        writer.writerows(rows)
+    db_save_schedule(profile, rows)
 
 
 def clean_title(filename):
@@ -130,21 +119,21 @@ def get_redirect_uri():
     return f"{APP_BASE_URL}/auth/callback"
 
 
-def get_youtube_service():
-    if not os.path.exists(TOKEN_FILE):
+def get_youtube_service(profile: str):
+    token_json = db_get_token(profile)
+    if not token_json:
         raise HTTPException(
             status_code=401,
-            detail="YouTube auth missing. Open /auth/start first.",
+            detail=f"YouTube auth missing for profile '{profile}'. Open /auth/start first.",
         )
 
-    creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+    creds = Credentials.from_authorized_user_info(json.loads(token_json), SCOPES)
 
     if not creds or not creds.valid:
         if creds and creds.refresh_token:
             from google.auth.transport.requests import Request
             creds.refresh(Request())
-            with open(TOKEN_FILE, "w", encoding="utf-8") as token:
-                token.write(creds.to_json())
+            db_save_token(profile, creds.to_json())
         else:
             raise HTTPException(
                 status_code=401,
@@ -173,15 +162,17 @@ def health():
 
 @app.get("/profiles")
 def list_profiles():
-    return {"profiles": os.listdir(PROFILES_DIR)}
+    return {"profiles": db_get_profiles()}
 
 @app.post("/profiles")
 def create_profile(name: str):
-    get_profile_dir(name)
+    db_add_profile(name)
+    get_profile_dir(name) # Ensure disk folder exists for temp videos
     return {"status": "success", "message": f"Profile '{name}' created."}
 
 @app.delete("/profiles/{name}")
-def delete_profile(name: str):
+def delete_profile_route(name: str):
+    db_delete_profile(name)
     pdir = os.path.join(PROFILES_DIR, name)
     if os.path.exists(pdir):
         shutil.rmtree(pdir)
@@ -189,12 +180,12 @@ def delete_profile(name: str):
 
 @app.get("/auth/status")
 def auth_status(profile: str = "default"):
-    paths = get_paths(profile)
-    if not os.path.exists(paths["token"]):
-        return {"authenticated": False, "message": "No token file found"}
+    token_json = db_get_token(profile)
+    if not token_json:
+        return {"authenticated": False, "message": "No token found in database"}
     
     try:
-        creds = Credentials.from_authorized_user_file(paths["token"], SCOPES)
+        creds = Credentials.from_authorized_user_info(json.loads(token_json), SCOPES)
         if creds and creds.valid:
             return {"authenticated": True, "profile": profile}
         elif creds and creds.refresh_token:
@@ -222,27 +213,25 @@ def auth_start(profile: str = "default"):
         prompt="consent",
     )
 
-    # Save state/verifier tied to profile
-    with open(os.path.join(get_profile_dir(profile), "flow_state.json"), "w") as f:
-        json.dump({"code_verifier": flow.code_verifier, "profile": profile}, f)
+    # Save state/verifier tied to profile in DB
+    db_save_flow_state(profile, {"code_verifier": flow.code_verifier, "profile": profile})
 
     return RedirectResponse(auth_url)
 
 
 @app.get("/auth/callback")
 def auth_callback(code: str):
-    # Find active flow_state
+    # Find active flow_state across all profiles in DB
     profile = "default"
     code_verifier = None
     
-    for p in os.listdir(PROFILES_DIR):
-        fpath = os.path.join(PROFILES_DIR, p, "flow_state.json")
-        if os.path.exists(fpath):
-            with open(fpath, "r") as f:
-                data = json.load(f)
-                profile = data.get("profile", "default")
-                code_verifier = data.get("code_verifier")
-                break
+    profiles = db_get_profiles()
+    for p in profiles:
+        state = db_get_flow_state(p)
+        if state:
+            profile = state.get("profile", "default")
+            code_verifier = state.get("code_verifier")
+            break
 
     try:
         flow = Flow.from_client_secrets_file(
@@ -255,9 +244,8 @@ def auth_callback(code: str):
         flow.fetch_token(code=code)
         creds = flow.credentials
 
-        paths = get_paths(profile)
-        with open(paths["token"], "w", encoding="utf-8") as token:
-            token.write(creds.to_json())
+        # Save to DB instead of file
+        db_save_token(profile, creds.to_json())
 
         # Clean up
         state_path = os.path.join(PROFILES_DIR, profile, "flow_state.json")
@@ -413,14 +401,7 @@ def delete_schedule_item(filename: str, profile: str = "default"):
 
 
 def upload_to_youtube(profile: str, row: dict):
-    paths = get_paths(profile)
-    token_path = paths["token"]
-    
-    if not os.path.exists(token_path):
-        raise Exception(f"No authentication found for profile '{profile}'")
-        
-    creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-    youtube = build("youtube", "v3", credentials=creds)
+    youtube = get_youtube_service(profile)
 
     filename = row["filename"].strip()
     video_path = os.path.join(paths["videos"], filename)
